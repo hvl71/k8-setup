@@ -1,0 +1,125 @@
+#instruction to setup windows server 2019 kubernetes note using Flannel/vxlan network. Node setup in hyper-v image.
+
+Get Windows Server 2019 iso from msdn
+
+create 1. generation VM using en_windows_server_2019_x64_dvd_4cb967d8.iso. 4096 mb ram and 40 gb disk.
+
+#this patch must be applied (needed by flannel/overlay network):
+https://support.microsoft.com/da-dk/help/4489899/windows-10-update-kb4489899
+
+Turn of VM and run on the host:
+$VMName="kwin2019-2019.03.06"
+Set-VMProcessor -VMName $VMName -ExposeVirtualizationExtensions $true
+Get-VMNetworkAdapter -VMName $VMName | Set-VMNetworkAdapter -MacAddressSpoofing On
+
+#make sure we have at least 2 vcpu assigned to the image before continueing
+#Hyper-V manager->VM->Settings->Processor
+#shut down image if you need to change
+
+#install win2019
+
+#On the windows node in elevated powershell prompt:
+Install-Module -Name DockerMsftProvider -Repository PSGallery -Force
+Install-Package -Name Docker -ProviderName DockerMsftProvider
+Restart-Computer -Force
+
+Install-Package -Name Docker -MinimumVersion 19.03 -MaximumVersion 19.04 -ProviderName DockerMsftProvider
+Restart-Computer -Force
+
+After restart (verify basic docker functionality):
+docker version
+
+#https://www.ntweekly.com/2019/02/06/update-docker-on-windows-server-2019/
+
+Find-Package -Name Docker -ProviderName DockerMSFTProvider
+
+Name                           Version          Source           Summary
+----                           -------          ------           -------
+Docker                         19.03.5          DockerDefault    Contains Docker EE for use with Windows Server.
+
+Install-Package -Name Docker -ProviderName DockerMSFTProvider -Update -Force
+
+Restart-service docker
+
+docker version
+
+#run as admin in ps prompt.. not ps core 6 prompt.. ordinary ps prompt..
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Start-BitsTransfer https://github.com/kubernetes-sigs/sig-windows-tools/archive/master.zip
+
+tar -xvf .\master.zip
+
+Remove-Item .\master.zip
+
+#instead of using sig-windows-tools-master/kubeadm/v1.16.0/Kubeclustervxlan.json from the above zip I have prepared my copy here that I use
+#specifically I reference v1.17.0 in the json file
+wget https://raw.githubusercontent.com/hvl71/k8-setup/master/Kubeclustervxlan.json -outfile Kubeclustervxlan.hvl71.json
+
+#on master node run
+kubeadm token create --print-join-command
+and
+ifconfig
+
+#the above commands outputs --token and --discovery-token-ca-cert-hash and IP config values needed later on
+--token 81eSOMETHING-LIKE-THISoih     --discovery-token-ca-cert-hash sha256:2eSOMETHINK-LIKE-THIS25
+ifconfig eth01: 192.168.219.108
+
+#configure Kubeclustervxlan.hvl71.json accordingly:
+notepad .\Kubeclustervxlan.hvl71.json
+
+replace kubemasterIP with master node found with ifconfig
+replace localadmin with user from master node - (the user you use to log into the master node with)
+replace token with token from kubeadmn token create command
+replace discovery-token-ca-cert-hash with discovery-token-ca-cert-hash value from kubeadm token create command
+
+#Ready to join - what about the generated SSH key?
+#I don't think the KubeCluster.ps1 script handles this?
+#will line 264-270 ever get invoked? only if running the script with -install and the public key part in .ssh is already present
+
+to workaround this, I do (on the windows node):
+$pubKeyHVL71=$(cat $env:userprofile/.ssh/id_rsa.pub)
+        Write-Host "Execute the below commands on the Linux control-plane node to add this Windows node's public key to its authorized keys"
+        Write-Host "touch ~/.ssh/authorized_keys"
+        Write-Host "$pubKeyHVL71 >> ~/.ssh/authorized_keys"
+
+and then run the 2 actual commands as root on the master node
+
+to verify ssh connectivity I go back to the windows node and do
+ssh <master-node-user>@<master-node-ip>
+
+If connection succeeds - we should be good to go
+
+I copy .\Kubeclustervxlan.hvl71.json to .\sig-windows-tools-master\kubeadm\Kubeclustervxlan.hvl71.json
+
+I create wrapper scripts for -install, -join and -reset and put them in .\sig-windows-tools-master\kubeadm
+The purpose of the wrapper scripts is to make it faster to step through the KubeCluster.ps1 script
+My wrapper scripts can be found here:
+https://github.com/hvl71/k8-setup
+
+I open VS code as admin with PS extension from the folder .\sig-windows-tools-master\kubeadm so I can step through the install script
+Take care that we are executing as Powershell 5.1 (lower right corner of VS code). Powershell core will not work as we depend on get-windowsfeature somewhere. And that is not available on PS core
+I run my kubeinstall.ps1 script containing the below command from this folder .\sig-windows-tools-master\kubeadm:
+.\KubeCluster.ps1 -ConfigFile .\Kubeclustervxlan.hvl71.json -install
+
+I run my kubeJoin.ps1 script containing the below command from this folder .\sig-windows-tools-master\kubeadm:
+.\KubeCluster.ps1 -ConfigFile .\Kubeclustervxlan.hvl71.json -join
+
+I manage to step through all of it
+
+Finally.. horns now.. finally.. I can do
+kubectl get nodes
+
+PS C:\Users\Administrator\sig-windows-tools-master\kubeadm> kubectl get nodes
+NAME              STATUS   ROLES    AGE     VERSION
+ubuntu190306      Ready    master   4h32m   v1.17.0
+win-escp16ltkof   Ready    <none>   28m     v1.17.0
+
+I can even deploy to it!
+
+wget https://raw.githubusercontent.com/hvl71/k8-manifests/master/win-webserver.yaml -outfile hvl71.deploy.yml
+kubectl apply -f hvl71.deploy.yml
+
+kubectl get pods
+kubectl get svc
+
+And I can hit the small web server running in the 2 pods (from the Windows node - there is no external IP).. yehaa!!

@@ -1,0 +1,189 @@
+My notes on setting up a Kubernetes 1.17 master localhost in Hyper-V image
+
+#primarily based on https://docs.microsoft.com/en-us/virtualization/windowscontainers/kubernetes/creating-a-linux-master
+#master will be setup in hyper-v image
+
+create 1. generation VM using ubuntu-18.04.2-desktop-amd64.iso. 3072 mb ram and 25 gb disk.
+
+sudo apt install net-tools (to get ifconfig)
+sudo apt install openssh-server (to get ssh server)
+#apt list <package> can be used to list what's already installed
+
+#show swap level
+$ cat /proc/sys/vm/swappiness
+60
+
+#set swappiness to 0 (ctrl + o to write file, ctrl + x to exit nano editor)
+sudo nano /etc/sysctl.conf
+vm.swappiness = 0
+
+#verify swappiness remains disabled:
+reboot
+cat /proc/sys/vm/swappiness
+#shows 0, so change is persisted
+
+turn of VM and run this command on the host:
+$VMName="ubuntu-18.04.2-desktop-amd64-2019.03.06"
+Set-VMProcessor -VMName $VMName -ExposeVirtualizationExtensions $true
+Get-VMNetworkAdapter -VMName $VMName | Set-VMNetworkAdapter -MacAddressSpoofing On
+
+#make sure we have at least 2 vcpu assigned to the image before continueing
+#Hyper-V manager->VM->Settings->Processor
+#shut down image if you need to change
+
+sudo –s
+apt-get update -y && apt-get upgrade -y
+exit (to go from root to previous user)
+
+#################################################################################
+install docker based on https://docs.docker.com/install/linux/docker-ce/ubuntu/ 
+#################################################################################
+
+sudo apt-get update
+
+sudo apt-get install \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg-agent \
+    software-properties-common
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+
+sudo apt-key fingerprint 0EBFCD88
+
+sudo add-apt-repository \
+   "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+   $(lsb_release -cs) \
+   stable"
+
+sudo apt-get update
+
+#find docker versions:
+sudo apt-cache madison docker-ce
+
+#find which version is latest supported version on Windows:
+https://docs.docker.com/docker-for-windows/release-notes/
+
+#dont do this - installs latest docker which is too new for Kubernetes later on..
+#sudo apt-get install docker-ce docker-ce-cli containerd.io
+#instead do this:
+
+sudo apt-get install docker-ce=<VERSION_STRING> docker-ce-cli=<VERSION_STRING> containerd.io
+sudo apt-get install docker-ce=5:19.03.5~3-0~ubuntu-bionic docker-ce-cli=5:19.03.5~3-0~ubuntu-bionic containerd.io
+docker — version
+sudo service docker status
+
+#verify docker works on the ubuntu VM:
+sudo docker run hello-world
+
+#################################################################################
+Disable swap permanently
+#################################################################################
+
+sudo -s
+swapoff -a
+
+#to permanently turn off swap
+nano /etc/fstab
+#comment out swapfile
+
+#################################################################################
+install kubernetes
+#################################################################################
+
+sudo -s
+
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+cat <<EOF >/etc/apt/sources.list.d/kubernetes.list
+deb http://apt.kubernetes.io/ kubernetes-xenial main
+EOF
+apt-get update && apt-get install -y kubelet kubeadm kubectl 
+
+#################################################################################
+init kubernetes cluster
+#################################################################################
+
+sudo -s
+
+#to avoid pulling imiages during kubeadm init..
+kubeadm config images pull
+
+#find hostname on ubuntu VM
+hostname
+
+#pass in the host name - this way we don't have to reset the cluster whenever the VM changes IP - which happens often in DHCP.. saves a lot of time
+#kubeadm init  --control-plane-endpoint <master-hostname> --pod-network-cidr=10.244.0.0/16 --service-cidr=10.96.0.0/12
+
+#in my case
+kubeadm init --control-plane-endpoint ubuntu190306 --pod-network-cidr=10.244.0.0/16 --service-cidr=10.96.0.0/12
+
+#exit elevation, that is proceed as regular user
+exit
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+#check if master node uses IP or node name
+kubectl config view
+
+#try to reboot and check if cluster is still ok
+sudo reboot
+kubectl cluster-info
+
+#if not - troubleshoot:
+journalctl -xeu kubelet
+#or perhaps
+systemctl start kubelet
+systemctl status kubelet
+
+#################################################################################
+Enable mixed-OS scheduling - from https://docs.microsoft.com/en-us/virtualization/windowscontainers/kubernetes/creating-a-linux-master
+#################################################################################
+
+sudo -s
+
+mkdir -p kube/yaml && cd kube/yaml
+kubectl get ds/kube-proxy -o go-template='{{.spec.updateStrategy.type}}{{"\n"}}' --namespace=kube-system
+returnerer: 
+RollingUpdate
+
+wget https://raw.githubusercontent.com/Microsoft/SDN/master/Kubernetes/flannel/l2bridge/manifests/node-selector-patch.yml
+kubectl patch ds/kube-proxy --patch "$(cat node-selector-patch.yml)" -n=kube-system
+
+##################################################################################
+select network topology: 
+https://docs.microsoft.com/en-us/virtualization/windowscontainers/kubernetes/network-topologies
+https://techcommunity.microsoft.com/t5/Networking-Blog/Introducing-Kubernetes-Overlay-Networking-for-Windows/ba-p/363082
+https://kubernetes.io/docs/setup/production-environment/windows/user-guide-windows-nodes/
+##################################################################################
+
+I try to configure vxlan/overlay networking  inspired by this blog post:
+https://techcommunity.microsoft.com/t5/Networking-Blog/Introducing-Kubernetes-Overlay-Networking-for-Windows/ba-p/363082
+
+still as root
+sysctl net.bridge.bridge-nf-call-iptables=1
+
+#check initial cluster state is ok:
+kubectl cluster-info
+
+At this point I deviate a little from 
+https://docs.microsoft.com/en-us/virtualization/windowscontainers/kubernetes/network-topologies
+Specifically I make my own version of kube-flannel.yml called kube-flannel-win.yml with the suggested changes in the net-conf.json and cni-conf.json sections
+My version with the original version as baseline (see git diff)
+
+#get my customized kube-flannel.yml:
+wget https://raw.githubusercontent.com/hvl71/flannel/master/Documentation/kube-flannel-win.yml
+
+kubectl apply -f kube-flannel-win.yml
+
+kubectl patch ds/kube-flannel-ds-amd64 --patch "$(cat node-selector-patch.yml)" -n=kube-system
+
+Then I verify the kube-system pods are all up:
+kubectl get pods --all-namespaces
+
+check master node is in ready state:
+kubectl get nodes
+
+Next up:
+https://kubernetes.io/docs/setup/production-environment/windows/user-guide-windows-nodes/
