@@ -51,6 +51,8 @@ tar -xvf .\master.zip
 
 Remove-Item .\master.zip
 
+set-location .\sig-windows-tools-master\kubeadm
+
 #instead of using sig-windows-tools-master/kubeadm/v1.16.0/Kubeclustervxlan.json from the above zip I have prepared my copy here that I use
 #specifically I reference v1.17.0 in the json file
 wget https://raw.githubusercontent.com/hvl71/k8-setup/master/Kubeclustervxlan.json -outfile Kubeclustervxlan.hvl71.json
@@ -89,12 +91,12 @@ ssh <master-node-user>@<master-node-ip>
 
 If connection succeeds - we should be good to go
 
-I copy .\Kubeclustervxlan.hvl71.json to .\sig-windows-tools-master\kubeadm\Kubeclustervxlan.hvl71.json
-
 I create wrapper scripts for -install, -join and -reset and put them in .\sig-windows-tools-master\kubeadm
+wget https://raw.githubusercontent.com/hvl71/k8-setup/master/KubeInstall.ps1 -outfile KubeInstall.ps1
+wget https://raw.githubusercontent.com/hvl71/k8-setup/master/KubeJoin.ps1 -outfile KubeJoin.ps1
+wget https://raw.githubusercontent.com/hvl71/k8-setup/master/KubeReset.ps1 -outfile KubeReset.ps1
+
 The purpose of the wrapper scripts is to make it faster to step through the KubeCluster.ps1 script
-My wrapper scripts can be found here:
-https://github.com/hvl71/k8-setup
 
 I open VS code as admin with PS extension from the folder .\sig-windows-tools-master\kubeadm so I can step through the install script
 Take care that we are executing as Powershell 5.1 (lower right corner of VS code). Powershell core will not work as we depend on get-windowsfeature somewhere. And that is not available on PS core
