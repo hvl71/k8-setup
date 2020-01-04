@@ -74,6 +74,10 @@ replace localadmin with user from master node - (the user you use to log into th
 replace token with token from kubeadmn token create command
 replace discovery-token-ca-cert-hash with discovery-token-ca-cert-hash value from kubeadm token create command
 
+****************************************************************************************************************************
+SSH step also handled in KubeJoin.ps1 script
+****************************************************************************************************************************
+
 #Ready to join - what about the generated SSH key?
 #I don't think the KubeCluster.ps1 script handles this?
 #will line 264-270 ever get invoked? only if running the script with -install and the public key part in .ssh is already present
@@ -90,6 +94,10 @@ to verify ssh connectivity I go back to the windows node and do
 ssh <master-node-user>@<master-node-ip>
 
 If connection succeeds - we should be good to go
+
+****************************************************************************************************************************
+SSH step end
+****************************************************************************************************************************
 
 I create wrapper scripts for -install, -join and -reset and put them in .\sig-windows-tools-master\kubeadm
 wget https://raw.githubusercontent.com/hvl71/k8-setup/master/KubeInstall.ps1 -outfile KubeInstall.ps1
